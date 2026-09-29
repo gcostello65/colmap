@@ -10,6 +10,7 @@ option(SIMD_ENABLED "Whether to enable SIMD optimizations" ON)
 option(OPENMP_ENABLED "Whether to enable OpenMP parallelization" ON)
 option(IPO_ENABLED "Whether to enable interprocedural optimization" ON)
 option(CUDA_ENABLED "Whether to enable CUDA, if available" ON)
+option(VULKAN_ENABLED "Enable Vulkan compute backend" ON)
 option(HIP_ENABLED "Whether to enable AMD GPU support via HIP/ROCm" OFF)
 
 if(CUDA_ENABLED AND HIP_ENABLED)

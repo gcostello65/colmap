@@ -68,6 +68,10 @@ if(CUDA_ENABLED)
     )
 endif()
 
+if(VULKAN_ENABLED)
+    add_subdirectory(vulkan)
+endif()
+
 if(TESTS_ENABLED)
     target_sources(
         colmap_util

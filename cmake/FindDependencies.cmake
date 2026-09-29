@@ -660,6 +660,13 @@ if(TARGET onnxruntime::onnxruntime)
     endif()
 endif()
 
+# Finding vulkan dependencies if vulkan backend is enabled for compute
+if(VULKAN_ENABLED)
+    find_package(Vulkan REQUIRED)
+    message(STATUS "Found Vulkan version: ${Vulkan_VERSION}")
+    list(APPEND COLMAP_COMPILE_DEFINITIONS COLMAP_VULKAN_ENABLED)
+endif()
+
 if(GUI_ENABLED)
     find_package(QT NAMES Qt5 Qt6 REQUIRED)
     set(COLMAP_QT_COMPONENTS Core OpenGL Svg Widgets)
