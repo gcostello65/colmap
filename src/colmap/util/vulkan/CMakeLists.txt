@@ -8,3 +8,15 @@ COLMAP_ADD_LIBRARY(
         PRIVATE_LINK_LIBS
         Vulkan::Vulkan
 )
+
+target_link_libraries(colmap_vulkan
+        PRIVATE
+        Vulkan::Vulkan
+        vk-bootstrap::vk-bootstrap
+        GPUOpen::VulkanMemoryAllocator
+)
+
+target_compile_definitions(
+        colmap_vulkan
+        PRIVATE COLMAP_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)

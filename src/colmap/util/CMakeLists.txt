@@ -237,6 +237,16 @@ if(GUI_ENABLED)
     )
 endif()
 
+if(VULKAN_ENABLED)
+    COLMAP_ADD_TEST(
+            NAME vulkan_utils_test
+            SRCS vulkan_utils_test.cc
+            LINK_LIBS
+            colmap_util
+            colmap_vulkan
+    )
+endif()
+
 if(HIP_ENABLED)
     # On ROCm builds, cuda.cc / cudacc.cc compile with the host C++ compiler.
     # They reference cudaXxx symbols, which the cuda_to_hip.h compatibility

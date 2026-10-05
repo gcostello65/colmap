@@ -665,6 +665,23 @@ if(VULKAN_ENABLED)
     find_package(Vulkan REQUIRED)
     message(STATUS "Found Vulkan version: ${Vulkan_VERSION}")
     list(APPEND COLMAP_COMPILE_DEFINITIONS COLMAP_VULKAN_ENABLED)
+
+    FetchContent_Declare(
+            vk_bootstrap
+            GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap.git
+            GIT_TAG        v1.4.364
+    )
+
+    FetchContent_Declare(
+            vma
+            GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+            GIT_TAG        v3.4.0
+    )
+
+    FetchContent_MakeAvailable(vk_bootstrap vma)
+
+    message(STATUS "vk-bootstrap source: ${vk_bootstrap_SOURCE_DIR}")
+    message(STATUS "VMA source: ${vma_SOURCE_DIR}")
 endif()
 
 if(GUI_ENABLED)
