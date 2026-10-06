@@ -55,6 +55,40 @@ uint32_t GetMemoryIndex(const vkb::Device& device, uint32_t type_bits) {
       "Could not find suitable host-visible Vulkan memory");
 }
 
+// With VMA, all resources have the allocation bookkeeping that needs to live alongside the resource
+struct AllocatedBuffer {
+  VkBuffer buffer;
+  VmaAllocation allocation;
+  void* mapped = nullptr;
+};
+
+AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usageFlags,
+                                     VkSharingMode sharingMode, VmaAllocationCreateFlags allocFlags,
+                      VmaAllocator allocator) {
+  AllocatedBuffer allocBuffer{};
+
+  VkBufferCreateInfo bInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bInfo.size = size;
+  bInfo.usage = usageFlags;
+  bInfo.sharingMode = sharingMode;
+
+  VmaAllocationCreateInfo allocInfo{};
+  allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocInfo.flags = allocFlags;
+
+  VmaAllocationInfo allocationInfo{};
+  VkResult allocResult = vmaCreateBuffer(allocator, &bInfo, &allocInfo,
+                  &allocBuffer.buffer, &allocBuffer.allocation, &allocationInfo);
+  allocBuffer.mapped = allocationInfo.pMappedData;
+
+  // TODO: Determine, Greg, if we should silently fail here and retry?
+  if (allocResult != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create Vulkan buffer");
+  }
+
+  return allocBuffer;
+}
+
 }  // namespace
 
 // Using PImpl pattern here to decouple internal vulkan objects from the header
@@ -85,6 +119,7 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
   auto instance_result = instance_builder.use_default_debug_messenger()
                              .request_validation_layers()
                              .set_headless()
+                             .require_api_version(1, 1, 0)
                              .build();
 
   if (!instance_result) {
@@ -162,7 +197,7 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
 
   VmaAllocatorCreateInfo allocatorCreateInfo = {};
   allocatorCreateInfo.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
-  allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_2;
+  allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_1;
   allocatorCreateInfo.physicalDevice = impl_->physical_device;
   allocatorCreateInfo.device = impl_->device;
   allocatorCreateInfo.instance = impl_->instance;
@@ -208,12 +243,6 @@ std::string VulkanBackend::DeviceName() const {
 
   return impl_->physical_device.properties.deviceName;
 }
-
-//void patch_match();
-//void VulkanBackend::patch_match() {
-//
-//}
-
 
 uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   if (!IsInitialized()) {
@@ -280,11 +309,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   //
   // Create the two storage buffers.
   //
-  VkBuffer buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-
-  VkDeviceMemory memories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-
-  uint32_t* mapped[2] = {nullptr, nullptr};
+  AllocatedBuffer buffers[2] = {{}, {}};\
 
   VkBufferCreateInfo buffer_info{};
   buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -295,54 +320,28 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
   for (int i = 0; i < 2; ++i) {
-    if (impl_->dispatch.createBuffer(&buffer_info, nullptr, &buffers[i]) !=
-        VK_SUCCESS) {
-      throw std::runtime_error("Failed to create Vulkan buffer");
-    }
-
-    VkMemoryRequirements requirements{};
-
-    impl_->dispatch.getBufferMemoryRequirements(buffers[i], &requirements);
-
-    VkMemoryAllocateInfo allocation_info{};
-    allocation_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocation_info.allocationSize = requirements.size;
-    allocation_info.memoryTypeIndex =
-        GetMemoryIndex(impl_->device, requirements.memoryTypeBits);
-
-    if (impl_->dispatch.allocateMemory(
-            &allocation_info, nullptr, &memories[i]) != VK_SUCCESS) {
-      throw std::runtime_error("Failed to allocate Vulkan memory");
-    }
-
-    if (impl_->dispatch.bindBufferMemory(buffers[i], memories[i], 0) !=
-        VK_SUCCESS) {
-      throw std::runtime_error("Failed to bind Vulkan buffer memory");
-    }
-
-    if (impl_->dispatch.mapMemory(memories[i],
-                                  0,
-                                  VK_WHOLE_SIZE,
-                                  0,
-                                  reinterpret_cast<void**>(&mapped[i])) !=
-        VK_SUCCESS) {
-      throw std::runtime_error("Failed to map Vulkan memory");
-    }
+    buffers[i] = createBuffer(sizeof(uint32_t),
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE,
+                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                  VMA_ALLOCATION_CREATE_MAPPED_BIT, impl_->allocator);
   }
 
-  mapped[0][0] = a;
-  mapped[1][0] = b;
+  *static_cast<uint32_t*>(buffers[0].mapped) = a;
+
+  *static_cast<uint32_t*>(buffers[1].mapped) = b;
 
   //
   // Point the descriptor set at our buffers.
   //
   VkDescriptorBufferInfo buffer_infos[2]{};
 
-  buffer_infos[0].buffer = buffers[0];
+  buffer_infos[0].buffer = buffers[0].buffer;
   buffer_infos[0].offset = 0;
   buffer_infos[0].range = sizeof(uint32_t);
 
-  buffer_infos[1].buffer = buffers[1];
+  buffer_infos[1].buffer = buffers[1].buffer;
   buffer_infos[1].offset = 0;
   buffer_infos[1].range = sizeof(uint32_t);
 
@@ -497,7 +496,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   //
   // Shader writes the result into buffer A.
   //
-  const uint32_t result = mapped[0][0];
+  const uint32_t result =  *static_cast<uint32_t*>(buffers[0].mapped);
 
   //
   // Cleanup.
@@ -513,12 +512,10 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   impl_->dispatch.destroyDescriptorSetLayout(descriptor_set_layout, nullptr);
 
   for (int i = 0; i < 2; ++i) {
-    impl_->dispatch.unmapMemory(memories[i]);
-
-    impl_->dispatch.destroyBuffer(buffers[i], nullptr);
-
-    impl_->dispatch.freeMemory(memories[i], nullptr);
+    vmaDestroyBuffer(impl_->allocator, buffers[i].buffer, buffers[i].allocation);
   }
+
+  vmaDestroyAllocator(impl_->allocator);
 
   return result;
 }
