@@ -1,15 +1,4 @@
-#include "colmap/util/vulkan/vulkan_backend.h"
-
-#include <cstdint>
-#include <fstream>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
-#include <VkBootstrap.h>
-#define VMA_STATIC_VULKAN_FUNCTIONS 0
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
-#include <vk_mem_alloc.h>
+#include "colmap/util/vulkan/vulkan_context.h"
 
 namespace colmap {
 
@@ -33,66 +22,20 @@ std::vector<char> ReadFile(const std::string& filename) {
   return buffer;
 }
 
-uint32_t GetMemoryIndex(const vkb::Device& device, uint32_t type_bits) {
-  const VkPhysicalDeviceMemoryProperties& properties =
-      device.physical_device.memory_properties;
+VkDescriptorSetLayoutBinding createDescriptorSetLayoutBinding(VkDescriptorType type, VkShaderStageFlagBits shaderStage,
+                                                              uint32_t bindingIndex, uint32_t descriptorCount) {
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding = bindingIndex;
+  binding.descriptorType = type;
+  binding.descriptorCount = descriptorCount;
+  binding.stageFlags = shaderStage;
 
-  for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
-    const bool type_supported = (type_bits & (1u << i)) != 0;
-
-    const VkMemoryPropertyFlags required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-    const bool properties_supported =
-        (properties.memoryTypes[i].propertyFlags & required) == required;
-
-    if (type_supported && properties_supported) {
-      return i;
-    }
-  }
-
-  throw std::runtime_error(
-      "Could not find suitable host-visible Vulkan memory");
+  return binding;
 }
-
-// With VMA, all resources have the allocation bookkeeping that needs to live alongside the resource
-struct AllocatedBuffer {
-  VkBuffer buffer;
-  VmaAllocation allocation;
-  void* mapped = nullptr;
-};
-
-AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usageFlags,
-                                     VkSharingMode sharingMode, VmaAllocationCreateFlags allocFlags,
-                      VmaAllocator allocator) {
-  AllocatedBuffer allocBuffer{};
-
-  VkBufferCreateInfo bInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  bInfo.size = size;
-  bInfo.usage = usageFlags;
-  bInfo.sharingMode = sharingMode;
-
-  VmaAllocationCreateInfo allocInfo{};
-  allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-  allocInfo.flags = allocFlags;
-
-  VmaAllocationInfo allocationInfo{};
-  VkResult allocResult = vmaCreateBuffer(allocator, &bInfo, &allocInfo,
-                  &allocBuffer.buffer, &allocBuffer.allocation, &allocationInfo);
-  allocBuffer.mapped = allocationInfo.pMappedData;
-
-  // TODO: Determine, Greg, if we should silently fail here and retry?
-  if (allocResult != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create Vulkan buffer");
-  }
-
-  return allocBuffer;
-}
-
 }  // namespace
 
 // Using PImpl pattern here to decouple internal vulkan objects from the header
-struct VulkanBackend::Impl {
+struct VulkanContext::Context {
   vkb::Instance instance;
   vkb::InstanceDispatchTable instance_dispatch;
 
@@ -109,8 +52,57 @@ struct VulkanBackend::Impl {
   bool initialized = false;
 };
 
+VkDescriptorSetLayout VulkanContext::createDescriptorSetLayout(
+    const std::vector<VkDescriptorSetLayoutBinding>& bindings) {
+  VkDescriptorSetLayout descriptorSetLayout{};
+
+  VkDescriptorSetLayoutCreateInfo layout_info{};
+  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layout_info.bindingCount = bindings.size();
+  layout_info.pBindings = bindings.data();
+
+  if (context_->dispatch.createDescriptorSetLayout(&layout_info,
+                                                   nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create descriptor set layout");
+  }
+
+  return descriptorSetLayout;
+}
+
+//VkDescriptorPool VulkanContext::createDescriporPool() {
+//
+//}
+
+AllocatedBuffer VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usageFlags,
+                                            VkSharingMode sharingMode, VmaAllocationCreateFlags allocFlags,
+                                            VmaAllocator allocator) {
+  AllocatedBuffer allocBuffer{};
+
+  VkBufferCreateInfo bInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bInfo.size = size;
+  bInfo.usage = usageFlags;
+  bInfo.sharingMode = sharingMode;
+
+  VmaAllocationCreateInfo allocInfo{};
+  allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocInfo.flags = allocFlags;
+
+  VmaAllocationInfo allocationInfo{};
+  VkResult allocResult = vmaCreateBuffer(allocator, &bInfo, &allocInfo,
+                                         &allocBuffer.buffer, &allocBuffer.allocation, &allocationInfo);
+  allocBuffer.mapped = allocationInfo.pMappedData;
+
+  // TODO: Determine, Greg, if we should silently fail here and retry?
+  if (allocResult != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create Vulkan buffer");
+  }
+
+  return allocBuffer;
+}
+
+
 // RAII: the constructor initializes the standard vulkan objects needed to perform computations
-VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
+VulkanContext::VulkanContext() : context_(std::make_unique<Context>()) {
   //
   // Instance
   //
@@ -127,13 +119,13 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
                              instance_result.error().message());
   }
 
-  impl_->instance = instance_result.value();
-  impl_->instance_dispatch = impl_->instance.make_table();
+  context_->instance = instance_result.value();
+  context_->instance_dispatch = context_->instance.make_table();
 
   //
   // Physical device
   //
-  vkb::PhysicalDeviceSelector selector{impl_->instance};
+  vkb::PhysicalDeviceSelector selector{context_->instance};
 
   auto physical_device_result = selector.select();
 
@@ -150,12 +142,12 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
     throw std::runtime_error(error);
   }
 
-  impl_->physical_device = physical_device_result.value();
+  context_->physical_device = physical_device_result.value();
 
   //
   // Logical device
   //
-  vkb::DeviceBuilder device_builder{impl_->physical_device};
+  vkb::DeviceBuilder device_builder{context_->physical_device};
 
   auto device_result = device_builder.build();
 
@@ -164,31 +156,31 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
                              device_result.error().message());
   }
 
-  impl_->device = device_result.value();
-  impl_->dispatch = impl_->device.make_table();
+  context_->device = device_result.value();
+  context_->dispatch = context_->device.make_table();
 
   //
   // Compute can run on a graphics queue.
   //
-  auto queue_result = impl_->device.get_queue(vkb::QueueType::compute);
+  auto queue_result = context_->device.get_queue(vkb::QueueType::compute);
 
   if (!queue_result) {
     throw std::runtime_error("Failed to get Vulkan queue: " +
                              queue_result.error().message());
   }
 
-  impl_->queue = queue_result.value();
+  context_->queue = queue_result.value();
 
   auto queue_index_result =
-      impl_->device.get_queue_index(vkb::QueueType::compute);
+      context_->device.get_queue_index(vkb::QueueType::compute);
 
   if (!queue_index_result) {
     throw std::runtime_error("Failed to get Vulkan queue family index");
   }
 
-  impl_->queue_family_index = queue_index_result.value();
+  context_->queue_family_index = queue_index_result.value();
 
-  impl_->initialized = true;
+  context_->initialized = true;
 
   // Init VMA allocator
   VmaVulkanFunctions vulkanFunctions = {};
@@ -198,9 +190,9 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
   VmaAllocatorCreateInfo allocatorCreateInfo = {};
   allocatorCreateInfo.flags = VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
   allocatorCreateInfo.vulkanApiVersion = VK_API_VERSION_1_1;
-  allocatorCreateInfo.physicalDevice = impl_->physical_device;
-  allocatorCreateInfo.device = impl_->device;
-  allocatorCreateInfo.instance = impl_->instance;
+  allocatorCreateInfo.physicalDevice = context_->physical_device;
+  allocatorCreateInfo.device = context_->device;
+  allocatorCreateInfo.instance = context_->instance;
   allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 
   VmaAllocator allocator;
@@ -209,42 +201,42 @@ VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {
   if (allocator == VK_NULL_HANDLE) {
     throw std::runtime_error("Could not create VMA allocator");
   }
-  impl_->allocator = allocator;
+  context_->allocator = allocator;
 }
 
-VulkanBackend::~VulkanBackend() {
-  if (!impl_) {
+VulkanContext::~VulkanContext() {
+  if (!context_) {
     return;
   }
 
-  if (impl_->device.device != VK_NULL_HANDLE) {
-    impl_->dispatch.deviceWaitIdle();
+  if (context_->device.device != VK_NULL_HANDLE) {
+    context_->dispatch.deviceWaitIdle();
 
-    vkb::destroy_device(impl_->device);
+    vkb::destroy_device(context_->device);
   }
 
-  if (impl_->instance.instance != VK_NULL_HANDLE) {
-    vkb::destroy_instance(impl_->instance);
+  if (context_->instance.instance != VK_NULL_HANDLE) {
+    vkb::destroy_instance(context_->instance);
   }
 
-  if (impl_->instance.instance != VK_NULL_HANDLE) {
-    vmaDestroyAllocator(impl_->allocator);
+  if (context_->instance.instance != VK_NULL_HANDLE) {
+    vmaDestroyAllocator(context_->allocator);
   }
 }
 
-bool VulkanBackend::IsInitialized() const {
-  return impl_ && impl_->initialized;
+bool VulkanContext::IsInitialized() const {
+  return context_ && context_->initialized;
 }
 
-std::string VulkanBackend::DeviceName() const {
-  if (!impl_ || !impl_->initialized) {
+std::string VulkanContext::DeviceName() const {
+  if (!context_ || !context_->initialized) {
     return {};
   }
 
-  return impl_->physical_device.properties.deviceName;
+  return context_->physical_device.properties.deviceName;
 }
 
-uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
+uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   if (!IsInitialized()) {
     throw std::runtime_error("Vulkan backend is not initialized");
   }
@@ -252,23 +244,14 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   //
   // Descriptor set layout
   //
-  VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSetLayoutBinding> bindings{};
 
-  VkDescriptorSetLayoutBinding binding{};
-  binding.binding = 0;
-  binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  binding.descriptorCount = 2;
-  binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutBinding binding = createDescriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                                          VK_SHADER_STAGE_COMPUTE_BIT, 0, 2);
 
-  VkDescriptorSetLayoutCreateInfo layout_info{};
-  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  layout_info.bindingCount = 1;
-  layout_info.pBindings = &binding;
+  bindings.push_back(binding);
 
-  if (impl_->dispatch.createDescriptorSetLayout(
-          &layout_info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create descriptor set layout");
-  }
+  VkDescriptorSetLayout descriptor_set_layout = createDescriptorSetLayout(bindings);
 
   //
   // Descriptor pool
@@ -285,7 +268,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &pool_size;
 
-  if (impl_->dispatch.createDescriptorPool(
+  if (context_->dispatch.createDescriptorPool(
           &pool_info, nullptr, &descriptor_pool) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create descriptor pool");
   }
@@ -301,7 +284,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   descriptor_alloc_info.descriptorSetCount = 1;
   descriptor_alloc_info.pSetLayouts = &descriptor_set_layout;
 
-  if (impl_->dispatch.allocateDescriptorSets(&descriptor_alloc_info,
+  if (context_->dispatch.allocateDescriptorSets(&descriptor_alloc_info,
                                              &descriptor_set) != VK_SUCCESS) {
     throw std::runtime_error("Failed to allocate descriptor set");
   }
@@ -325,7 +308,8 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE,
                               VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                  VMA_ALLOCATION_CREATE_MAPPED_BIT, impl_->allocator);
+                                  VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        context_->allocator);
   }
 
   *static_cast<uint32_t*>(buffers[0].mapped) = a;
@@ -354,7 +338,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   descriptor_write.pBufferInfo = buffer_infos;
 
-  impl_->dispatch.updateDescriptorSets(1, &descriptor_write, 0, nullptr);
+  context_->dispatch.updateDescriptorSets(1, &descriptor_write, 0, nullptr);
 
   //
   // Load SPIR-V.
@@ -372,7 +356,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
 
   VkShaderModule shader_module = VK_NULL_HANDLE;
 
-  if (impl_->dispatch.createShaderModule(
+  if (context_->dispatch.createShaderModule(
           &shader_info, nullptr, &shader_module) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create compute shader module");
   }
@@ -387,7 +371,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   pipeline_layout_info.setLayoutCount = 1;
   pipeline_layout_info.pSetLayouts = &descriptor_set_layout;
 
-  if (impl_->dispatch.createPipelineLayout(
+  if (context_->dispatch.createPipelineLayout(
           &pipeline_layout_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create pipeline layout");
   }
@@ -408,7 +392,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
 
   VkPipeline pipeline = VK_NULL_HANDLE;
 
-  if (impl_->dispatch.createComputePipelines(
+  if (context_->dispatch.createComputePipelines(
           VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) !=
       VK_SUCCESS) {
     throw std::runtime_error("Failed to create compute pipeline");
@@ -417,7 +401,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   //
   // Shader module is no longer needed after pipeline creation.
   //
-  impl_->dispatch.destroyShaderModule(shader_module, nullptr);
+  context_->dispatch.destroyShaderModule(shader_module, nullptr);
 
   //
   // Command pool
@@ -426,9 +410,9 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
 
   VkCommandPoolCreateInfo command_pool_info{};
   command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  command_pool_info.queueFamilyIndex = impl_->queue_family_index;
+  command_pool_info.queueFamilyIndex = context_->queue_family_index;
 
-  if (impl_->dispatch.createCommandPool(
+  if (context_->dispatch.createCommandPool(
           &command_pool_info, nullptr, &command_pool) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create command pool");
   }
@@ -444,7 +428,7 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   command_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   command_alloc_info.commandBufferCount = 1;
 
-  if (impl_->dispatch.allocateCommandBuffers(&command_alloc_info,
+  if (context_->dispatch.allocateCommandBuffers(&command_alloc_info,
                                              &command_buffer) != VK_SUCCESS) {
     throw std::runtime_error("Failed to allocate command buffer");
   }
@@ -455,15 +439,15 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   VkCommandBufferBeginInfo begin_info{};
   begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-  if (impl_->dispatch.beginCommandBuffer(command_buffer, &begin_info) !=
+  if (context_->dispatch.beginCommandBuffer(command_buffer, &begin_info) !=
       VK_SUCCESS) {
     throw std::runtime_error("Failed to begin command buffer");
   }
 
-  impl_->dispatch.cmdBindPipeline(
+  context_->dispatch.cmdBindPipeline(
       command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
-  impl_->dispatch.cmdBindDescriptorSets(command_buffer,
+  context_->dispatch.cmdBindDescriptorSets(command_buffer,
                                         VK_PIPELINE_BIND_POINT_COMPUTE,
                                         pipeline_layout,
                                         0,
@@ -472,9 +456,9 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
                                         0,
                                         nullptr);
 
-  impl_->dispatch.cmdDispatch(command_buffer, 1, 1, 1);
+  context_->dispatch.cmdDispatch(command_buffer, 1, 1, 1);
 
-  if (impl_->dispatch.endCommandBuffer(command_buffer) != VK_SUCCESS) {
+  if (context_->dispatch.endCommandBuffer(command_buffer) != VK_SUCCESS) {
     throw std::runtime_error("Failed to end command buffer");
   }
 
@@ -486,36 +470,39 @@ uint32_t VulkanBackend::Add(uint32_t a, uint32_t b) {
   submit_info.commandBufferCount = 1;
   submit_info.pCommandBuffers = &command_buffer;
 
-  if (impl_->dispatch.queueSubmit(
-          impl_->queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+  if (context_->dispatch.queueSubmit(
+          context_->queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
     throw std::runtime_error("Failed to submit Vulkan compute work");
   }
 
-  impl_->dispatch.deviceWaitIdle();
+  context_->dispatch.deviceWaitIdle();
 
   //
   // Shader writes the result into buffer A.
   //
   const uint32_t result =  *static_cast<uint32_t*>(buffers[0].mapped);
 
+
+  //TODO - Move this into the destructor and make sure it is owned by the correct code, not the throw away Add method
   //
   // Cleanup.
   //
-  impl_->dispatch.destroyCommandPool(command_pool, nullptr);
+  context_->dispatch.destroyCommandPool(command_pool, nullptr);
 
-  impl_->dispatch.destroyPipeline(pipeline, nullptr);
+  context_->dispatch.destroyPipeline(pipeline, nullptr);
 
-  impl_->dispatch.destroyPipelineLayout(pipeline_layout, nullptr);
+  context_->dispatch.destroyPipelineLayout(pipeline_layout, nullptr);
 
-  impl_->dispatch.destroyDescriptorPool(descriptor_pool, nullptr);
+  context_->dispatch.destroyDescriptorPool(descriptor_pool, nullptr);
 
-  impl_->dispatch.destroyDescriptorSetLayout(descriptor_set_layout, nullptr);
+  context_->dispatch.destroyDescriptorSetLayout(descriptor_set_layout, nullptr);
 
   for (int i = 0; i < 2; ++i) {
-    vmaDestroyBuffer(impl_->allocator, buffers[i].buffer, buffers[i].allocation);
+    vmaDestroyBuffer(
+        context_->allocator, buffers[i].buffer, buffers[i].allocation);
   }
 
-  vmaDestroyAllocator(impl_->allocator);
+  vmaDestroyAllocator(context_->allocator);
 
   return result;
 }

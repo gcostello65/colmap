@@ -1,14 +1,14 @@
-#include "colmap/util/vulkan/vulkan_backend.h"
-
-#include <gtest/gtest.h>
+#include "colmap/util/vulkan/vulkan_context.h"
 
 #include <iostream>
+
+#include <gtest/gtest.h>
 
 namespace colmap {
 namespace {
 
 TEST(VulkanBackendTest, Initializes) {
-  VulkanBackend backend;
+  VulkanContext backend;
 
   EXPECT_TRUE(backend.IsInitialized());
   EXPECT_FALSE(backend.DeviceName().empty());
@@ -19,13 +19,13 @@ TEST(VulkanBackendTest, Initializes) {
 }
 
 TEST(VulkanBackendTest, HeadlessCompute) {
-  VulkanBackend backend;
+  VulkanContext backend;
 
   EXPECT_EQ(backend.Add(42, 58), 100);
 }
 
 TEST(VulkanBackendTest, HeadlessComputeDifferentValues) {
-  VulkanBackend backend;
+  VulkanContext backend;
 
   EXPECT_EQ(backend.Add(123, 456), 579);
 }
