@@ -40,12 +40,29 @@ class VulkanContext {
   // Temporary smoke-test operation.
   // Executes the addition on the GPU.
   uint32_t Add(uint32_t a, uint32_t b);
-  AllocatedBuffer createBuffer(VkDeviceSize size, VkBufferUsageFlags usageFlags,
-                              VkSharingMode sharingMode, VmaAllocationCreateFlags allocFlags,
-                              VmaAllocator allocator);
+  AllocatedBuffer createBuffer(VkDeviceSize size,
+                                      VkBufferUsageFlags usageFlags,
+                                      VkSharingMode sharingMode,
+                                      VmaAllocationCreateFlags allocFlags);
 
  VkDescriptorSetLayout createDescriptorSetLayout(
       const std::vector<VkDescriptorSetLayoutBinding>& bindings);
+
+ static VkDescriptorPoolSize createDescriptorPoolSize(VkDescriptorType descriptorType,
+                                               uint32_t descriptorCount);
+
+ VkDescriptorPool createDescriptorPool(
+     uint32_t maxDescriptorSets,
+     const std::vector<VkDescriptorPoolSize>& poolSizes);
+
+VkDescriptorSet createDescriptorSet(const VkDescriptorPool &descriptorPool, const VkDescriptorSetLayout &descriptorSetLayout);
+
+VkWriteDescriptorSet createBufferDescriptorWrite(
+    const VkDescriptorSet& descriptorSet,
+    uint32_t binding,
+    uint32_t destinationArrayElement,
+    const std::vector<VkDescriptorBufferInfo>& bufferInfos,
+    VkDescriptorType descriptorType);
 
      private:
   struct Context;

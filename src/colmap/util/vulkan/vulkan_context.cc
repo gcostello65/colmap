@@ -69,13 +69,68 @@ VkDescriptorSetLayout VulkanContext::createDescriptorSetLayout(
   return descriptorSetLayout;
 }
 
-//VkDescriptorPool VulkanContext::createDescriporPool() {
-//
-//}
+VkDescriptorPoolSize VulkanContext::createDescriptorPoolSize(VkDescriptorType descriptorType, uint32_t descriptorCount) {
+  VkDescriptorPoolSize pool_size{};
+  pool_size.type = descriptorType;
+  pool_size.descriptorCount = descriptorCount;
+  return pool_size;
+}
 
-AllocatedBuffer VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usageFlags,
-                                            VkSharingMode sharingMode, VmaAllocationCreateFlags allocFlags,
-                                            VmaAllocator allocator) {
+VkDescriptorPool VulkanContext::createDescriptorPool(
+    uint32_t maxDescriptorSets,
+    const std::vector<VkDescriptorPoolSize>& poolSizes) {
+  VkDescriptorPoolCreateInfo pool_info{};
+  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pool_info.maxSets = maxDescriptorSets;
+  pool_info.poolSizeCount = poolSizes.size();
+  pool_info.pPoolSizes = poolSizes.data();
+
+  VkDescriptorPool descriptorPool{};
+
+  if (context_->dispatch.createDescriptorPool(&pool_info, nullptr, &descriptorPool) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create descriptor pool");
+  }
+
+  return descriptorPool;
+}
+
+VkDescriptorSet VulkanContext::createDescriptorSet(const VkDescriptorPool &descriptorPool, const VkDescriptorSetLayout &descriptorSetLayout) {
+  VkDescriptorSetAllocateInfo descriptor_alloc_info{};
+  descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  descriptor_alloc_info.descriptorPool = descriptorPool;
+  descriptor_alloc_info.descriptorSetCount = 1;
+  descriptor_alloc_info.pSetLayouts = &descriptorSetLayout;
+
+  VkDescriptorSet descriptorSet{};
+
+  if (context_->dispatch.allocateDescriptorSets(&descriptor_alloc_info,
+                                                 &descriptorSet) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to allocate descriptor set");
+  }
+
+  return descriptorSet;
+}
+
+//TODO: createImageDescriptorWrite(...) as an analog to this below
+VkWriteDescriptorSet VulkanContext::createBufferDescriptorWrite(const VkDescriptorSet &descriptorSet, uint32_t binding, uint32_t destinationArrayElement,
+                                        const std::vector<VkDescriptorBufferInfo> &bufferInfos, VkDescriptorType descriptorType) {
+  VkWriteDescriptorSet descriptor_write{};
+  descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  descriptor_write.dstSet = descriptorSet;
+  descriptor_write.dstBinding = binding;
+  descriptor_write.dstArrayElement = destinationArrayElement;
+  descriptor_write.descriptorCount = bufferInfos.size();
+  descriptor_write.descriptorType = descriptorType;
+  descriptor_write.pBufferInfo = bufferInfos.data();
+
+  return descriptor_write;
+}
+
+AllocatedBuffer VulkanContext::createBuffer(
+    VkDeviceSize size,
+    VkBufferUsageFlags usageFlags,
+    VkSharingMode sharingMode,
+    VmaAllocationCreateFlags allocFlags) {
   AllocatedBuffer allocBuffer{};
 
   VkBufferCreateInfo bInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -88,7 +143,7 @@ AllocatedBuffer VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlag
   allocInfo.flags = allocFlags;
 
   VmaAllocationInfo allocationInfo{};
-  VkResult allocResult = vmaCreateBuffer(allocator, &bInfo, &allocInfo,
+  VkResult allocResult = vmaCreateBuffer(context_->allocator, &bInfo, &allocInfo,
                                          &allocBuffer.buffer, &allocBuffer.allocation, &allocationInfo);
   allocBuffer.mapped = allocationInfo.pMappedData;
 
@@ -256,60 +311,32 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   //
   // Descriptor pool
   //
-  VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorPoolSize> poolSizes{};
 
-  VkDescriptorPoolSize pool_size{};
-  pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  pool_size.descriptorCount = 2;
+  VkDescriptorPoolSize poolSize = createDescriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2);
 
-  VkDescriptorPoolCreateInfo pool_info{};
-  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.maxSets = 1;
-  pool_info.poolSizeCount = 1;
-  pool_info.pPoolSizes = &pool_size;
+  poolSizes.push_back(poolSize);
 
-  if (context_->dispatch.createDescriptorPool(
-          &pool_info, nullptr, &descriptor_pool) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create descriptor pool");
-  }
+  VkDescriptorPool descriptorPool = createDescriptorPool(1, poolSizes);
 
   //
   // Descriptor set
   //
-  VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-
-  VkDescriptorSetAllocateInfo descriptor_alloc_info{};
-  descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  descriptor_alloc_info.descriptorPool = descriptor_pool;
-  descriptor_alloc_info.descriptorSetCount = 1;
-  descriptor_alloc_info.pSetLayouts = &descriptor_set_layout;
-
-  if (context_->dispatch.allocateDescriptorSets(&descriptor_alloc_info,
-                                             &descriptor_set) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate descriptor set");
-  }
+  VkDescriptorSet descriptor_set = createDescriptorSet(descriptorPool, descriptor_set_layout);
 
   //
   // Create the two storage buffers.
   //
-  AllocatedBuffer buffers[2] = {{}, {}};\
-
-  VkBufferCreateInfo buffer_info{};
-  buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-  buffer_info.size = sizeof(uint32_t);
-  buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                      VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-  buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  AllocatedBuffer buffers[2] = {{}, {}};
 
   for (int i = 0; i < 2; ++i) {
-    buffers[i] = createBuffer(sizeof(uint32_t),
-                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE,
-                              VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                                  VMA_ALLOCATION_CREATE_MAPPED_BIT,
-        context_->allocator);
+    buffers[i] = createBuffer(
+        sizeof(uint32_t),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_SHARING_MODE_EXCLUSIVE,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT);
   }
 
   *static_cast<uint32_t*>(buffers[0].mapped) = a;
@@ -319,7 +346,8 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   //
   // Point the descriptor set at our buffers.
   //
-  VkDescriptorBufferInfo buffer_infos[2]{};
+  std::vector<VkDescriptorBufferInfo> buffer_infos{};
+  buffer_infos.resize(2);
 
   buffer_infos[0].buffer = buffers[0].buffer;
   buffer_infos[0].offset = 0;
@@ -329,17 +357,16 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   buffer_infos[1].offset = 0;
   buffer_infos[1].range = sizeof(uint32_t);
 
-  VkWriteDescriptorSet descriptor_write{};
-  descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  descriptor_write.dstSet = descriptor_set;
-  descriptor_write.dstBinding = 0;
-  descriptor_write.dstArrayElement = 0;
-  descriptor_write.descriptorCount = 2;
-  descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  descriptor_write.pBufferInfo = buffer_infos;
+  std::vector<VkWriteDescriptorSet> writeDescriptorSets{};
 
-  context_->dispatch.updateDescriptorSets(1, &descriptor_write, 0, nullptr);
+  writeDescriptorSets.push_back(
+      createBufferDescriptorWrite(descriptor_set,
+                                  binding.binding,
+                                  0,
+                                  buffer_infos,
+                                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER));
 
+  context_->dispatch.updateDescriptorSets(writeDescriptorSets.size(), writeDescriptorSets.data(), 0, nullptr);
   //
   // Load SPIR-V.
   //
@@ -493,7 +520,7 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
 
   context_->dispatch.destroyPipelineLayout(pipeline_layout, nullptr);
 
-  context_->dispatch.destroyDescriptorPool(descriptor_pool, nullptr);
+  context_->dispatch.destroyDescriptorPool(descriptorPool, nullptr);
 
   context_->dispatch.destroyDescriptorSetLayout(descriptor_set_layout, nullptr);
 
