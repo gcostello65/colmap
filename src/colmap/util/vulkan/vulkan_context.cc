@@ -370,36 +370,134 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   //
   // Load SPIR-V.
   //
-  const std::string shader_path = std::string(COLMAP_SOURCE_DIR) +
+  const std::string shaderPath = std::string(COLMAP_SOURCE_DIR) +
                                   "/src/colmap/util/vulkan/shaders/"
                                   "simple_compute.comp.spv";
 
-  const std::vector<char> shader_code = ReadFile(shader_path);
+  const std::vector<char> shaderCode = ReadFile(shaderPath);
 
-  VkShaderModuleCreateInfo shader_info{};
-  shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-  shader_info.codeSize = shader_code.size();
-  shader_info.pCode = reinterpret_cast<const uint32_t*>(shader_code.data());
 
-  VkShaderModule shader_module = VK_NULL_HANDLE;
+  VkShaderModule shaderModule = createShaderModule(&shaderCode, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
 
-  if (context_->dispatch.createShaderModule(
-          &shader_info, nullptr, &shader_module) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create compute shader module");
+
+  std::vector<VkDescriptorSetLayout> descLayouts{};
+
+  descLayouts.push_back(descriptor_set_layout);
+  ComputePipeline computePipeline = createComputePipeline(descLayouts, shaderModule);
+
+  //
+  // Shader module is no longer needed after pipeline creation.
+  //
+  context_->dispatch.destroyShaderModule(shaderModule, nullptr);
+
+  //
+  // Command pool
+  //
+  CommandResources commandResources = createCommandResources();
+
+  //
+  // Record compute commands.
+  //
+  VkCommandBufferBeginInfo begin_info{};
+  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+  if (context_->dispatch.beginCommandBuffer(commandResources.commandBuffer, &begin_info) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("Failed to begin command buffer");
+  }
+
+  context_->dispatch.cmdBindPipeline(
+      commandResources.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline.pipeline);
+
+  context_->dispatch.cmdBindDescriptorSets(commandResources.commandBuffer,
+                                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                                           computePipeline.pipelineLayout,
+                                        0,
+                                        1,
+                                        &descriptor_set,
+                                        0,
+                                        nullptr);
+
+  context_->dispatch.cmdDispatch(commandResources.commandBuffer, 1, 1, 1);
+
+  if (context_->dispatch.endCommandBuffer(commandResources.commandBuffer) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to end command buffer");
   }
 
   //
+  // Submit.
+  //
+  VkSubmitInfo submit_info{};
+  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = &commandResources.commandBuffer;
+
+  if (context_->dispatch.queueSubmit(
+          context_->queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to submit Vulkan compute work");
+  }
+
+  context_->dispatch.deviceWaitIdle();
+
+  //
+  // Shader writes the result into buffer A.
+  //
+  const uint32_t result =  *static_cast<uint32_t*>(buffers[0].mapped);
+
+
+  //TODO - Move this into the destructor and make sure it is owned by the correct code, not the throw away Add method
+  //
+  // Cleanup.
+  //
+  context_->dispatch.destroyCommandPool(commandResources.commandPool, nullptr);
+
+  context_->dispatch.destroyPipeline(computePipeline.pipeline, nullptr);
+
+  context_->dispatch.destroyPipelineLayout(computePipeline.pipelineLayout, nullptr);
+
+  context_->dispatch.destroyDescriptorPool(descriptorPool, nullptr);
+
+  context_->dispatch.destroyDescriptorSetLayout(descriptor_set_layout, nullptr);
+
+  for (int i = 0; i < 2; ++i) {
+    vmaDestroyBuffer(
+        context_->allocator, buffers[i].buffer, buffers[i].allocation);
+  }
+
+  vmaDestroyAllocator(context_->allocator);
+
+  return result;
+}
+
+VkShaderModule VulkanContext::createShaderModule(const std::vector<char> *shader_code, VkStructureType structureType) {
+  VkShaderModuleCreateInfo shader_info{};
+  shader_info.sType = structureType;
+  shader_info.codeSize = shader_code->size();
+  shader_info.pCode = reinterpret_cast<const uint32_t*>(shader_code->data());
+
+  VkShaderModule shaderModule{};
+  if (context_->dispatch.createShaderModule(
+          &shader_info, nullptr, &shaderModule) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create compute shader module");
+  }
+
+  return shaderModule;
+}
+
+ComputePipeline VulkanContext::createComputePipeline(const std::vector<VkDescriptorSetLayout> &descriptorSetLayouts,
+                                                     VkShaderModule shaderModule) {
+  //
   // Pipeline layout
   //
-  VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
 
   VkPipelineLayoutCreateInfo pipeline_layout_info{};
   pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pipeline_layout_info.setLayoutCount = 1;
-  pipeline_layout_info.pSetLayouts = &descriptor_set_layout;
+  pipeline_layout_info.setLayoutCount = descriptorSetLayouts.size();
+  pipeline_layout_info.pSetLayouts = descriptorSetLayouts.data();
 
   if (context_->dispatch.createPipelineLayout(
-          &pipeline_layout_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
+          &pipeline_layout_info, nullptr, &pipelineLayout) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create pipeline layout");
   }
 
@@ -409,13 +507,13 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   VkPipelineShaderStageCreateInfo shader_stage{};
   shader_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
   shader_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  shader_stage.module = shader_module;
+  shader_stage.module = shaderModule;
   shader_stage.pName = "main";
 
   VkComputePipelineCreateInfo pipeline_info{};
   pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   pipeline_info.stage = shader_stage;
-  pipeline_info.layout = pipeline_layout;
+  pipeline_info.layout = pipelineLayout;
 
   VkPipeline pipeline = VK_NULL_HANDLE;
 
@@ -425,14 +523,10 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
     throw std::runtime_error("Failed to create compute pipeline");
   }
 
-  //
-  // Shader module is no longer needed after pipeline creation.
-  //
-  context_->dispatch.destroyShaderModule(shader_module, nullptr);
+  return {pipeline, pipelineLayout};
+}
 
-  //
-  // Command pool
-  //
+CommandResources VulkanContext::createCommandResources() {
   VkCommandPool command_pool = VK_NULL_HANDLE;
 
   VkCommandPoolCreateInfo command_pool_info{};
@@ -456,82 +550,11 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   command_alloc_info.commandBufferCount = 1;
 
   if (context_->dispatch.allocateCommandBuffers(&command_alloc_info,
-                                             &command_buffer) != VK_SUCCESS) {
+                                                &command_buffer) != VK_SUCCESS) {
     throw std::runtime_error("Failed to allocate command buffer");
   }
 
-  //
-  // Record compute commands.
-  //
-  VkCommandBufferBeginInfo begin_info{};
-  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-  if (context_->dispatch.beginCommandBuffer(command_buffer, &begin_info) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("Failed to begin command buffer");
-  }
-
-  context_->dispatch.cmdBindPipeline(
-      command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-
-  context_->dispatch.cmdBindDescriptorSets(command_buffer,
-                                        VK_PIPELINE_BIND_POINT_COMPUTE,
-                                        pipeline_layout,
-                                        0,
-                                        1,
-                                        &descriptor_set,
-                                        0,
-                                        nullptr);
-
-  context_->dispatch.cmdDispatch(command_buffer, 1, 1, 1);
-
-  if (context_->dispatch.endCommandBuffer(command_buffer) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to end command buffer");
-  }
-
-  //
-  // Submit.
-  //
-  VkSubmitInfo submit_info{};
-  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-  submit_info.commandBufferCount = 1;
-  submit_info.pCommandBuffers = &command_buffer;
-
-  if (context_->dispatch.queueSubmit(
-          context_->queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to submit Vulkan compute work");
-  }
-
-  context_->dispatch.deviceWaitIdle();
-
-  //
-  // Shader writes the result into buffer A.
-  //
-  const uint32_t result =  *static_cast<uint32_t*>(buffers[0].mapped);
-
-
-  //TODO - Move this into the destructor and make sure it is owned by the correct code, not the throw away Add method
-  //
-  // Cleanup.
-  //
-  context_->dispatch.destroyCommandPool(command_pool, nullptr);
-
-  context_->dispatch.destroyPipeline(pipeline, nullptr);
-
-  context_->dispatch.destroyPipelineLayout(pipeline_layout, nullptr);
-
-  context_->dispatch.destroyDescriptorPool(descriptorPool, nullptr);
-
-  context_->dispatch.destroyDescriptorSetLayout(descriptor_set_layout, nullptr);
-
-  for (int i = 0; i < 2; ++i) {
-    vmaDestroyBuffer(
-        context_->allocator, buffers[i].buffer, buffers[i].allocation);
-  }
-
-  vmaDestroyAllocator(context_->allocator);
-
-  return result;
+  return {command_pool, command_buffer};
 }
 
 }  // namespace colmap
