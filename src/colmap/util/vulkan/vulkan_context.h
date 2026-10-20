@@ -25,6 +25,12 @@ struct AllocatedBuffer {
   void* mapped = nullptr;
 };
 
+struct AllocatedImage {
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+  VkImageView view = VK_NULL_HANDLE;
+};
+
 struct ComputePipeline {
   VkPipeline pipeline;
   VkPipelineLayout pipelineLayout;
@@ -69,6 +75,7 @@ class VulkanContext {
       const VkDescriptorPool& descriptorPool,
       const VkDescriptorSetLayout& descriptorSetLayout);
 
+  // bufferInfos must remain valid until updateDescriptorSets() returns.
   VkWriteDescriptorSet createBufferDescriptorWrite(
       const VkDescriptorSet& descriptorSet,
       uint32_t binding,
@@ -85,8 +92,7 @@ class VulkanContext {
  private:
   struct Context;
   std::unique_ptr<Context> context_;
-  VkShaderModule createShaderModule(const std::vector<char>* shader_code,
-                                    VkStructureType structureType);
+  VkShaderModule createShaderModule(const std::vector<uint32_t>& shader_code);
 };
 
 }  // namespace colmap

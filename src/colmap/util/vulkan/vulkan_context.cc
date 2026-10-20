@@ -4,7 +4,7 @@ namespace colmap {
 
 namespace {
 
-std::vector<char> ReadFile(const std::string& filename) {
+std::vector<uint32_t> ReadFile(const std::string& filename) {
   // reading the shader file spirv
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
@@ -14,10 +14,17 @@ std::vector<char> ReadFile(const std::string& filename) {
 
   const std::size_t file_size = static_cast<std::size_t>(file.tellg());
 
-  std::vector<char> buffer(file_size);
+  if (file_size == 0 || file_size % sizeof(uint32_t) != 0) {
+    throw std::runtime_error("Invalid SPIR-V file size: " + filename);
+  }
+
+  std::vector<uint32_t> buffer(file_size / sizeof(uint32_t));
 
   file.seekg(0);
-  file.read(buffer.data(), static_cast<std::streamsize>(file_size));
+  if (!file.read(reinterpret_cast<char*>(buffer.data()),
+                 static_cast<std::streamsize>(file_size))) {
+    throw std::runtime_error("Failed to read shader file: " + filename);
+  }
 
   return buffer;
 }
@@ -44,117 +51,28 @@ struct VulkanContext::Context {
   vkb::Device device;
   vkb::DispatchTable dispatch;
 
-  VmaAllocator allocator;
+  VmaAllocator allocator = VK_NULL_HANDLE;
 
   VkQueue queue = VK_NULL_HANDLE;
   uint32_t queue_family_index = 0;
 
   bool initialized = false;
+
+  ~Context() {
+    if (device.device != VK_NULL_HANDLE) {
+      dispatch.deviceWaitIdle();
+    }
+    if (allocator != VK_NULL_HANDLE) {
+      vmaDestroyAllocator(allocator);
+    }
+    if (device.device != VK_NULL_HANDLE) {
+      vkb::destroy_device(device);
+    }
+    if (instance.instance != VK_NULL_HANDLE) {
+      vkb::destroy_instance(instance);
+    }
+  }
 };
-
-VkDescriptorSetLayout VulkanContext::createDescriptorSetLayout(
-    const std::vector<VkDescriptorSetLayoutBinding>& bindings) {
-  VkDescriptorSetLayout descriptorSetLayout{};
-
-  VkDescriptorSetLayoutCreateInfo layout_info{};
-  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  layout_info.bindingCount = bindings.size();
-  layout_info.pBindings = bindings.data();
-
-  if (context_->dispatch.createDescriptorSetLayout(&layout_info,
-                                                   nullptr, &descriptorSetLayout) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create descriptor set layout");
-  }
-
-  return descriptorSetLayout;
-}
-
-VkDescriptorPoolSize VulkanContext::createDescriptorPoolSize(VkDescriptorType descriptorType, uint32_t descriptorCount) {
-  VkDescriptorPoolSize pool_size{};
-  pool_size.type = descriptorType;
-  pool_size.descriptorCount = descriptorCount;
-  return pool_size;
-}
-
-VkDescriptorPool VulkanContext::createDescriptorPool(
-    uint32_t maxDescriptorSets,
-    const std::vector<VkDescriptorPoolSize>& poolSizes) {
-  VkDescriptorPoolCreateInfo pool_info{};
-  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.maxSets = maxDescriptorSets;
-  pool_info.poolSizeCount = poolSizes.size();
-  pool_info.pPoolSizes = poolSizes.data();
-
-  VkDescriptorPool descriptorPool{};
-
-  if (context_->dispatch.createDescriptorPool(&pool_info, nullptr, &descriptorPool) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create descriptor pool");
-  }
-
-  return descriptorPool;
-}
-
-VkDescriptorSet VulkanContext::createDescriptorSet(const VkDescriptorPool &descriptorPool, const VkDescriptorSetLayout &descriptorSetLayout) {
-  VkDescriptorSetAllocateInfo descriptor_alloc_info{};
-  descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  descriptor_alloc_info.descriptorPool = descriptorPool;
-  descriptor_alloc_info.descriptorSetCount = 1;
-  descriptor_alloc_info.pSetLayouts = &descriptorSetLayout;
-
-  VkDescriptorSet descriptorSet{};
-
-  if (context_->dispatch.allocateDescriptorSets(&descriptor_alloc_info,
-                                                 &descriptorSet) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate descriptor set");
-  }
-
-  return descriptorSet;
-}
-
-//TODO: createImageDescriptorWrite(...) as an analog to this below
-VkWriteDescriptorSet VulkanContext::createBufferDescriptorWrite(const VkDescriptorSet &descriptorSet, uint32_t binding, uint32_t destinationArrayElement,
-                                        const std::vector<VkDescriptorBufferInfo> &bufferInfos, VkDescriptorType descriptorType) {
-  VkWriteDescriptorSet descriptor_write{};
-  descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  descriptor_write.dstSet = descriptorSet;
-  descriptor_write.dstBinding = binding;
-  descriptor_write.dstArrayElement = destinationArrayElement;
-  descriptor_write.descriptorCount = bufferInfos.size();
-  descriptor_write.descriptorType = descriptorType;
-  descriptor_write.pBufferInfo = bufferInfos.data();
-
-  return descriptor_write;
-}
-
-AllocatedBuffer VulkanContext::createBuffer(
-    VkDeviceSize size,
-    VkBufferUsageFlags usageFlags,
-    VkSharingMode sharingMode,
-    VmaAllocationCreateFlags allocFlags) {
-  AllocatedBuffer allocBuffer{};
-
-  VkBufferCreateInfo bInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  bInfo.size = size;
-  bInfo.usage = usageFlags;
-  bInfo.sharingMode = sharingMode;
-
-  VmaAllocationCreateInfo allocInfo{};
-  allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-  allocInfo.flags = allocFlags;
-
-  VmaAllocationInfo allocationInfo{};
-  VkResult allocResult = vmaCreateBuffer(context_->allocator, &bInfo, &allocInfo,
-                                         &allocBuffer.buffer, &allocBuffer.allocation, &allocationInfo);
-  allocBuffer.mapped = allocationInfo.pMappedData;
-
-  // TODO: Determine, Greg, if we should silently fail here and retry?
-  if (allocResult != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create Vulkan buffer");
-  }
-
-  return allocBuffer;
-}
-
 
 // RAII: the constructor initializes the standard vulkan objects needed to perform computations
 VulkanContext::VulkanContext() : context_(std::make_unique<Context>()) {
@@ -235,8 +153,6 @@ VulkanContext::VulkanContext() : context_(std::make_unique<Context>()) {
 
   context_->queue_family_index = queue_index_result.value();
 
-  context_->initialized = true;
-
   // Init VMA allocator
   VmaVulkanFunctions vulkanFunctions = {};
   vulkanFunctions.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
@@ -250,34 +166,13 @@ VulkanContext::VulkanContext() : context_(std::make_unique<Context>()) {
   allocatorCreateInfo.instance = context_->instance;
   allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
 
-  VmaAllocator allocator;
-  vmaCreateAllocator(&allocatorCreateInfo, &allocator);
-
-  if (allocator == VK_NULL_HANDLE) {
+  if (vmaCreateAllocator(&allocatorCreateInfo, &context_->allocator) != VK_SUCCESS) {
     throw std::runtime_error("Could not create VMA allocator");
   }
-  context_->allocator = allocator;
+  context_->initialized = true;
 }
 
-VulkanContext::~VulkanContext() {
-  if (!context_) {
-    return;
-  }
-
-  if (context_->device.device != VK_NULL_HANDLE) {
-    context_->dispatch.deviceWaitIdle();
-
-    vkb::destroy_device(context_->device);
-  }
-
-  if (context_->instance.instance != VK_NULL_HANDLE) {
-    vkb::destroy_instance(context_->instance);
-  }
-
-  if (context_->instance.instance != VK_NULL_HANDLE) {
-    vmaDestroyAllocator(context_->allocator);
-  }
-}
+VulkanContext::~VulkanContext() = default;
 
 bool VulkanContext::IsInitialized() const {
   return context_ && context_->initialized;
@@ -289,6 +184,200 @@ std::string VulkanContext::DeviceName() const {
   }
 
   return context_->physical_device.properties.deviceName;
+}
+
+VkDescriptorSetLayout VulkanContext::createDescriptorSetLayout(
+    const std::vector<VkDescriptorSetLayoutBinding>& bindings) {
+  VkDescriptorSetLayout descriptorSetLayout{};
+
+  VkDescriptorSetLayoutCreateInfo layout_info{};
+  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layout_info.bindingCount = bindings.size();
+  layout_info.pBindings = bindings.data();
+
+  if (context_->dispatch.createDescriptorSetLayout(&layout_info,
+                                                   nullptr, &descriptorSetLayout) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create descriptor set layout");
+  }
+
+  return descriptorSetLayout;
+}
+
+VkDescriptorPoolSize VulkanContext::createDescriptorPoolSize(VkDescriptorType descriptorType, uint32_t descriptorCount) {
+  VkDescriptorPoolSize pool_size{};
+  pool_size.type = descriptorType;
+  pool_size.descriptorCount = descriptorCount;
+  return pool_size;
+}
+
+VkDescriptorPool VulkanContext::createDescriptorPool(
+    uint32_t maxDescriptorSets,
+    const std::vector<VkDescriptorPoolSize>& poolSizes) {
+  VkDescriptorPoolCreateInfo pool_info{};
+  pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pool_info.maxSets = maxDescriptorSets;
+  pool_info.poolSizeCount = poolSizes.size();
+  pool_info.pPoolSizes = poolSizes.data();
+
+  VkDescriptorPool descriptorPool{};
+
+  if (context_->dispatch.createDescriptorPool(&pool_info, nullptr, &descriptorPool) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create descriptor pool");
+  }
+
+  return descriptorPool;
+}
+
+VkDescriptorSet VulkanContext::createDescriptorSet(const VkDescriptorPool &descriptorPool, const VkDescriptorSetLayout &descriptorSetLayout) {
+  VkDescriptorSetAllocateInfo descriptor_alloc_info{};
+  descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  descriptor_alloc_info.descriptorPool = descriptorPool;
+  descriptor_alloc_info.descriptorSetCount = 1;
+  descriptor_alloc_info.pSetLayouts = &descriptorSetLayout;
+
+  VkDescriptorSet descriptorSet{};
+
+  if (context_->dispatch.allocateDescriptorSets(&descriptor_alloc_info,
+                                                &descriptorSet) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to allocate descriptor set");
+  }
+
+  return descriptorSet;
+}
+
+//TODO: createImageDescriptorWrite(...) as an analog to this below
+VkWriteDescriptorSet VulkanContext::createBufferDescriptorWrite(const VkDescriptorSet &descriptorSet, uint32_t binding, uint32_t destinationArrayElement,
+                                                                const std::vector<VkDescriptorBufferInfo> &bufferInfos, VkDescriptorType descriptorType) {
+  VkWriteDescriptorSet descriptor_write{};
+  descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  descriptor_write.dstSet = descriptorSet;
+  descriptor_write.dstBinding = binding;
+  descriptor_write.dstArrayElement = destinationArrayElement;
+  descriptor_write.descriptorCount = bufferInfos.size();
+  descriptor_write.descriptorType = descriptorType;
+  descriptor_write.pBufferInfo = bufferInfos.data();
+
+  return descriptor_write;
+}
+
+AllocatedBuffer VulkanContext::createBuffer(
+    VkDeviceSize size,
+    VkBufferUsageFlags usageFlags,
+    VkSharingMode sharingMode,
+    VmaAllocationCreateFlags allocFlags) {
+  AllocatedBuffer allocBuffer{};
+
+  VkBufferCreateInfo bInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  bInfo.size = size;
+  bInfo.usage = usageFlags;
+  bInfo.sharingMode = sharingMode;
+
+  VmaAllocationCreateInfo allocInfo{};
+  allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocInfo.flags = allocFlags;
+
+  VmaAllocationInfo allocationInfo{};
+  VkResult allocResult = vmaCreateBuffer(context_->allocator, &bInfo, &allocInfo,
+                                         &allocBuffer.buffer, &allocBuffer.allocation, &allocationInfo);
+  allocBuffer.mapped = allocationInfo.pMappedData;
+
+  // TODO: Determine, Greg, if we should silently fail here and retry?
+  if (allocResult != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create Vulkan buffer");
+  }
+
+  return allocBuffer;
+}
+
+VkShaderModule VulkanContext::createShaderModule(const std::vector<uint32_t>& shader_code) {
+  VkShaderModuleCreateInfo shader_info{};
+  shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  shader_info.codeSize = shader_code.size() * sizeof(uint32_t);
+  shader_info.pCode = shader_code.data();
+
+  VkShaderModule shaderModule{};
+  if (context_->dispatch.createShaderModule(
+          &shader_info, nullptr, &shaderModule) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create compute shader module");
+  }
+
+  return shaderModule;
+}
+
+ComputePipeline VulkanContext::createComputePipeline(const std::vector<VkDescriptorSetLayout> &descriptorSetLayouts,
+                                                     VkShaderModule shaderModule) {
+  //
+  // Pipeline layout
+  //
+  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+
+  VkPipelineLayoutCreateInfo pipeline_layout_info{};
+  pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  pipeline_layout_info.setLayoutCount = descriptorSetLayouts.size();
+  pipeline_layout_info.pSetLayouts = descriptorSetLayouts.data();
+
+  if (context_->dispatch.createPipelineLayout(
+          &pipeline_layout_info, nullptr, &pipelineLayout) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create pipeline layout");
+  }
+
+  //
+  // Compute pipeline
+  //
+  VkPipelineShaderStageCreateInfo shader_stage{};
+  shader_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  shader_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  shader_stage.module = shaderModule;
+  shader_stage.pName = "main";
+
+  VkComputePipelineCreateInfo pipeline_info{};
+  pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  pipeline_info.stage = shader_stage;
+  pipeline_info.layout = pipelineLayout;
+
+  VkPipeline pipeline = VK_NULL_HANDLE;
+
+  if (context_->dispatch.createComputePipelines(
+          VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) !=
+      VK_SUCCESS) {
+    context_->dispatch.destroyPipeline(pipeline, nullptr);
+    context_->dispatch.destroyPipelineLayout(pipelineLayout, nullptr);
+    throw std::runtime_error("Failed to create compute pipeline");
+  }
+
+  return {pipeline, pipelineLayout};
+}
+
+CommandResources VulkanContext::createCommandResources() {
+  VkCommandPool command_pool = VK_NULL_HANDLE;
+
+  VkCommandPoolCreateInfo command_pool_info{};
+  command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  command_pool_info.queueFamilyIndex = context_->queue_family_index;
+
+  if (context_->dispatch.createCommandPool(
+          &command_pool_info, nullptr, &command_pool) != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create command pool");
+  }
+
+  //
+  // Command buffer
+  //
+  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+
+  VkCommandBufferAllocateInfo command_alloc_info{};
+  command_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  command_alloc_info.commandPool = command_pool;
+  command_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  command_alloc_info.commandBufferCount = 1;
+
+  if (context_->dispatch.allocateCommandBuffers(&command_alloc_info,
+                                                &command_buffer) != VK_SUCCESS) {
+    context_->dispatch.destroyCommandPool(command_pool, nullptr);
+    throw std::runtime_error("Failed to allocate command buffer");
+  }
+
+  return {command_pool, command_buffer};
 }
 
 uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
@@ -370,14 +459,14 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
   //
   // Load SPIR-V.
   //
-  const std::string shaderPath = std::string(COLMAP_SOURCE_DIR) +
-                                  "/src/colmap/util/vulkan/shaders/"
-                                  "simple_compute.comp.spv";
+  const std::string shaderPath = std::string(COLMAP_VULKAN_SHADER_DIR) +
+                                 "/"
+                                 "simple_compute.comp.spv";
 
-  const std::vector<char> shaderCode = ReadFile(shaderPath);
+  const std::vector<uint32_t> shaderCode = ReadFile(shaderPath);
 
 
-  VkShaderModule shaderModule = createShaderModule(&shaderCode, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
+  VkShaderModule shaderModule = createShaderModule(shaderCode);
 
 
   std::vector<VkDescriptorSetLayout> descLayouts{};
@@ -410,13 +499,13 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
       commandResources.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline.pipeline);
 
   context_->dispatch.cmdBindDescriptorSets(commandResources.commandBuffer,
-                                        VK_PIPELINE_BIND_POINT_COMPUTE,
+                                           VK_PIPELINE_BIND_POINT_COMPUTE,
                                            computePipeline.pipelineLayout,
-                                        0,
-                                        1,
-                                        &descriptor_set,
-                                        0,
-                                        nullptr);
+                                           0,
+                                           1,
+                                           &descriptor_set,
+                                           0,
+                                           nullptr);
 
   context_->dispatch.cmdDispatch(commandResources.commandBuffer, 1, 1, 1);
 
@@ -464,97 +553,14 @@ uint32_t VulkanContext::Add(uint32_t a, uint32_t b) {
         context_->allocator, buffers[i].buffer, buffers[i].allocation);
   }
 
-  vmaDestroyAllocator(context_->allocator);
-
   return result;
 }
 
-VkShaderModule VulkanContext::createShaderModule(const std::vector<char> *shader_code, VkStructureType structureType) {
-  VkShaderModuleCreateInfo shader_info{};
-  shader_info.sType = structureType;
-  shader_info.codeSize = shader_code->size();
-  shader_info.pCode = reinterpret_cast<const uint32_t*>(shader_code->data());
+AllocatedImage createImage(uint32_t width,
+                           uint32_t height,
+                           VkFormat format,
+                           VkImageUsageFlags usage) {
 
-  VkShaderModule shaderModule{};
-  if (context_->dispatch.createShaderModule(
-          &shader_info, nullptr, &shaderModule) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create compute shader module");
-  }
-
-  return shaderModule;
-}
-
-ComputePipeline VulkanContext::createComputePipeline(const std::vector<VkDescriptorSetLayout> &descriptorSetLayouts,
-                                                     VkShaderModule shaderModule) {
-  //
-  // Pipeline layout
-  //
-  VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-
-  VkPipelineLayoutCreateInfo pipeline_layout_info{};
-  pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pipeline_layout_info.setLayoutCount = descriptorSetLayouts.size();
-  pipeline_layout_info.pSetLayouts = descriptorSetLayouts.data();
-
-  if (context_->dispatch.createPipelineLayout(
-          &pipeline_layout_info, nullptr, &pipelineLayout) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create pipeline layout");
-  }
-
-  //
-  // Compute pipeline
-  //
-  VkPipelineShaderStageCreateInfo shader_stage{};
-  shader_stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-  shader_stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-  shader_stage.module = shaderModule;
-  shader_stage.pName = "main";
-
-  VkComputePipelineCreateInfo pipeline_info{};
-  pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-  pipeline_info.stage = shader_stage;
-  pipeline_info.layout = pipelineLayout;
-
-  VkPipeline pipeline = VK_NULL_HANDLE;
-
-  if (context_->dispatch.createComputePipelines(
-          VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("Failed to create compute pipeline");
-  }
-
-  return {pipeline, pipelineLayout};
-}
-
-CommandResources VulkanContext::createCommandResources() {
-  VkCommandPool command_pool = VK_NULL_HANDLE;
-
-  VkCommandPoolCreateInfo command_pool_info{};
-  command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  command_pool_info.queueFamilyIndex = context_->queue_family_index;
-
-  if (context_->dispatch.createCommandPool(
-          &command_pool_info, nullptr, &command_pool) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to create command pool");
-  }
-
-  //
-  // Command buffer
-  //
-  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-
-  VkCommandBufferAllocateInfo command_alloc_info{};
-  command_alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-  command_alloc_info.commandPool = command_pool;
-  command_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  command_alloc_info.commandBufferCount = 1;
-
-  if (context_->dispatch.allocateCommandBuffers(&command_alloc_info,
-                                                &command_buffer) != VK_SUCCESS) {
-    throw std::runtime_error("Failed to allocate command buffer");
-  }
-
-  return {command_pool, command_buffer};
 }
 
 }  // namespace colmap

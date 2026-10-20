@@ -65,7 +65,9 @@ class PatchMatch {
  private:
   const PatchMatchOptions options_;
   const Problem problem_;
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
   std::unique_ptr<PatchMatchCuda> patch_match_cuda_;
+#endif
 };
 
 // This thread processes all problems in a workspace. A workspace has the

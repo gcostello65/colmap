@@ -254,6 +254,13 @@ if(CUDA_ENABLED)
     )
 endif()
 
+if(VULKAN_ENABLED)
+    target_sources(colmap_mvs PRIVATE
+            patch_match.h
+            patch_match.cc
+    )
+    target_link_libraries(colmap_mvs PRIVATE colmap_vulkan)
+endif()
 # ROCm HIP support for MVS (patch_match_stereo on AMD GPUs).
 #
 # enable_language(HIP) and find_package(hip/hiprand/rocrand) are handled

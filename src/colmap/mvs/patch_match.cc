@@ -4,9 +4,16 @@
 
 #include "colmap/math/math.h"
 #include "colmap/mvs/consistency_graph.h"
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
 #include "colmap/mvs/patch_match_cuda.h"
+#endif
 #include "colmap/mvs/workspace.h"
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
 #include "colmap/util/cuda.h"
+#endif
+#ifdef COLMAP_VULKAN_ENABLED
+#include "colmap/util/vulkan/vulkan_context.h"
+#endif
 #include "colmap/util/file.h"
 #include "colmap/util/hash_containers.h"
 #include "colmap/util/misc.h"
@@ -101,29 +108,58 @@ void PatchMatch::Check() const {
 void PatchMatch::Run() {
   LOG_HEADING2("PatchMatch::Run");
 
+#if defined(COLMAP_VULKAN_ENABLED)
+  LOG(INFO) << "Entered Vulkan PatchMatch path";
+
+  VulkanContext context;
+  const uint32_t result = context.Add(2, 3);
+  THROW_CHECK_EQ(result, 5);
+
+  throw std::runtime_error("Vulkan PatchMatch smoke test passed");
+#elif defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
+
   Check();
 
   patch_match_cuda_ = std::make_unique<PatchMatchCuda>(options_, problem_);
   patch_match_cuda_->Run();
+#else
+  throw std::runtime_error("No PatchMatch backend is enabled");
+#endif
 }
 
 DepthMap PatchMatch::GetDepthMap() const {
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
   return patch_match_cuda_->GetDepthMap();
+#else
+  throw std::runtime_error("Vulkan PatchMatch output is not implemented yet");
+#endif
 }
 
 NormalMap PatchMatch::GetNormalMap() const {
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
   return patch_match_cuda_->GetNormalMap();
+#else
+  throw std::runtime_error("Vulkan PatchMatch output is not implemented yet");
+#endif
 }
 
 Mat<float> PatchMatch::GetSelProbMap() const {
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
   return patch_match_cuda_->GetSelProbMap();
+#else
+  throw std::runtime_error("Vulkan PatchMatch output is not implemented yet");
+#endif
 }
 
 ConsistencyGraph PatchMatch::GetConsistencyGraph() const {
+#if defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
   const auto& ref_image = problem_.images->at(problem_.ref_image_idx);
   return ConsistencyGraph(ref_image.GetWidth(),
                           ref_image.GetHeight(),
                           patch_match_cuda_->GetConsistentImageIdxs());
+#else
+  throw std::runtime_error("Vulkan PatchMatch output is not implemented yet");
+#endif
 }
 
 PatchMatchController::PatchMatchController(
@@ -346,6 +382,10 @@ void PatchMatchController::ReadProblems() {
 }
 
 void PatchMatchController::ReadGpuIndices() {
+#ifdef COLMAP_VULKAN_ENABLED
+  // Use the default Vulkan device and one worker during pipeline setup.
+  gpu_indices_ = {0};
+#else
   gpu_indices_ = CSVToVector<int>(options_.gpu_index);
   if (gpu_indices_.size() == 1 && gpu_indices_[0] == -1) {
     const int num_cuda_devices = GetNumCudaDevices();
@@ -353,6 +393,7 @@ void PatchMatchController::ReadGpuIndices() {
     gpu_indices_.resize(num_cuda_devices);
     std::iota(gpu_indices_.begin(), gpu_indices_.end(), 0);
   }
+#endif
 }
 
 void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,

@@ -678,6 +678,9 @@ if(VULKAN_ENABLED)
             GIT_TAG        v3.4.0
     )
 
+    set(VK_BOOTSTRAP_INSTALL ON CACHE BOOL "" FORCE)
+    set(VMA_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
+
     FetchContent_MakeAvailable(vk_bootstrap vma)
 
     message(STATUS "vk-bootstrap source: ${vk_bootstrap_SOURCE_DIR}")
