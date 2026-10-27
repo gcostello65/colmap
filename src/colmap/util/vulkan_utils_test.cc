@@ -18,17 +18,5 @@ TEST(VulkanBackendTest, Initializes) {
             << '\n';
 }
 
-TEST(VulkanBackendTest, HeadlessCompute) {
-  VulkanContext backend;
-
-  EXPECT_EQ(backend.Add(42, 58), 100);
-}
-
-TEST(VulkanBackendTest, HeadlessComputeDifferentValues) {
-  VulkanContext backend;
-
-  EXPECT_EQ(backend.Add(123, 456), 579);
-}
-
 }  // namespace
 }  // namespace colmap

@@ -59,9 +59,6 @@ class VulkanContext {
 
   std::string DeviceName() const;
 
-  // Temporary smoke-test operation.
-  // Executes the addition on the GPU.
-  uint32_t Add(uint32_t a, uint32_t b);
   AllocatedBuffer createBuffer(VkDeviceSize size,
                                VkBufferUsageFlags usageFlags,
                                VkSharingMode sharingMode,
@@ -95,6 +92,9 @@ class VulkanContext {
 
   CommandResources createCommandResources();
 
+  // Call after GPU work using this image has finished.
+  void destroyImage(AllocatedImage &image);
+
   void copyImageDataToVkImage(VkImage &image, const Bitmap &imageData);
 
   AllocatedImage createGrayscaleImage(uint32_t width,
@@ -103,9 +103,9 @@ class VulkanContext {
                                       VkImageUsageFlags usage,
                                       const Bitmap &imageData);
 
- CommandResources beginCommand();
- void endCommand(CommandResources commandResources);
- void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout ,VkImageLayout newLayout);
+  CommandResources beginCommand();
+  void endCommand(CommandResources &commandResources);
+  void transitionImageLayout(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout oldLayout ,VkImageLayout newLayout);
 
  private:
   struct Context;

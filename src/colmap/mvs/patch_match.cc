@@ -111,11 +111,43 @@ void PatchMatch::Run() {
 #if defined(COLMAP_VULKAN_ENABLED)
   LOG(INFO) << "Entered Vulkan PatchMatch path";
 
-  VulkanContext context;
-  const uint32_t result = context.Add(2, 3);
-  THROW_CHECK_EQ(result, 5);
+  Check();
 
-  throw std::runtime_error("Vulkan PatchMatch smoke test passed");
+  // Temporary image upload check using this problem's actual bitmaps.
+  VulkanContext context;
+  std::vector<int> image_idxs{problem_.ref_image_idx};
+  image_idxs.insert(image_idxs.end(), problem_.src_image_idxs.begin(),
+                    problem_.src_image_idxs.end());
+  std::vector<AllocatedImage> images;
+  images.reserve(image_idxs.size());
+
+  try {
+    for (const int image_idx : image_idxs) {
+      const Bitmap &bitmap = problem_.images->at(image_idx).GetBitmap();
+      images.push_back(context.createGrayscaleImage(
+          bitmap.Width(), bitmap.Height(), VK_FORMAT_R8_UNORM,
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+          bitmap));
+      LOG(INFO) << "Uploaded Vulkan image " << image_idx << " ("
+                << bitmap.Width() << " x " << bitmap.Height() << ")";
+    }
+
+    // Break here to inspect the reference image followed by the source images.
+    LOG(INFO) << "Vulkan image upload check passed: " << images.size()
+              << " images ready for sampling";
+  } catch (...) {
+    for (auto &image : images) {
+      context.destroyImage(image);
+    }
+    throw;
+  }
+
+  for (auto &image : images) {
+    context.destroyImage(image);
+  }
+
+  // Temporary upload-only path; no depth/normal maps are produced yet.
+  return;
 #elif defined(COLMAP_CUDA_ENABLED) || defined(COLMAP_HIP_ENABLED)
 
   Check();
@@ -535,6 +567,12 @@ void PatchMatchController::ProcessProblem(const PatchMatchOptions& options,
 
   PatchMatch patch_match(patch_match_options, problem);
   patch_match.Run();
+
+#if defined(COLMAP_VULKAN_ENABLED)
+  // Temporary image upload check: skip output until Vulkan PatchMatch exists.
+  LOG(INFO) << "Vulkan upload-only check finished; skipping depth/normal map output";
+  return;
+#endif
 
   LOG(INFO) << std::endl
             << StringPrintf("Writing %s output for %s",
