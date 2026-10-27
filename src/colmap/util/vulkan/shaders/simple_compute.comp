@@ -7,5 +7,5 @@ layout(set = 0, binding = 0) buffer StorageBuffer {
 } buffers[2];
 
 void main() {
-    buffers[0].value = buffers[0].value / buffers[1].value;
+    buffers[0].value = buffers[0].value + buffers[1].value;
 }

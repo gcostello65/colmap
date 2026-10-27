@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "colmap/sensor/bitmap.h"
 
 #include <vk_mem_alloc.h>
 
@@ -29,6 +30,11 @@ struct AllocatedImage {
   VkImage image = VK_NULL_HANDLE;
   VmaAllocation allocation = VK_NULL_HANDLE;
   VkImageView view = VK_NULL_HANDLE;
+};
+
+struct SampledImage {
+  AllocatedImage image;
+  VkSampler sampler;
 };
 
 struct ComputePipeline {
@@ -88,6 +94,18 @@ class VulkanContext {
       VkShaderModule shaderModule);
 
   CommandResources createCommandResources();
+
+  void copyImageDataToVkImage(VkImage &image, const Bitmap &imageData);
+
+  AllocatedImage createGrayscaleImage(uint32_t width,
+                                      uint32_t height,
+                                      VkFormat format,
+                                      VkImageUsageFlags usage,
+                                      const Bitmap &imageData);
+
+ CommandResources beginCommand();
+ void endCommand(CommandResources commandResources);
+ void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout ,VkImageLayout newLayout);
 
  private:
   struct Context;
